@@ -46,8 +46,13 @@ def run_tokenize_prompt_and_output(
                 with labels, with value 1 where the corresponding label token
                 is part of the response and 0 otherwise.
     """
-    raise NotImplementedError
+    from cs336_alignment.sft_utils import tokenize_prompt_and_output
 
+    return tokenize_prompt_and_output(
+        prompt_strs = prompt_strs,
+        output_strs = output_strs,
+        tokenizer = tokenizer,
+    )
 
 def run_get_response_log_probs(
     model: torch.nn.Module,
@@ -82,8 +87,14 @@ def run_get_response_log_probs(
                 entropy for each position (present only if
                 return_token_entropy=True).
     """
-    raise NotImplementedError
+    from cs336_alignment.sft_utils import get_response_log_probs
 
+    return get_response_log_probs(
+        model = model,
+        input_ids = input_ids,
+        labels = labels,
+        return_token_entropy = return_token_entropy,
+    )
 
 def run_compute_rollout_rewards(
     reward_fn: Callable[[str, str], dict[str, float]],
