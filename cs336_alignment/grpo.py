@@ -1,5 +1,7 @@
 import torch
 from typing import Callable, Literal
+from transformers import PreTrainedModel, PreTrainedTokenizer
+from torch.optim import Optimizer
 
 def compute_rollout_rewards(
     reward_fn: Callable[[str, str], dict[str, float]],
@@ -30,7 +32,6 @@ def compute_rollout_rewards(
     }
 
     return raw_rewards, metadata
-
 
 def compute_group_normalized_rewards(
     raw_rewards: torch.Tensor,
@@ -218,3 +219,137 @@ def aggregate_loss_across_microbatch(
         )
 
     return loss
+
+def grpo_train_step(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    optimizer: Optimizer,
+    gradient_accumulation_steps: int,
+    max_grad_norm: float | None,
+    reward_fn: Callable[[str, str], dict[str, float]],
+    repeated_prompts: list[str],
+    rollout_responses: list[str],
+    repeated_ground_truths: list[str],
+    group_size: int,
+
+    baseline: Literal['mean', 'none'] = 'mean',
+    advantage_eps: float = 1e-6,
+    advantage_normalizer: Literal['std', 'none', 'mean'] = 'std',
+
+    importance_reweighting_method: Literal['none', 'noclip', 'grpo', 'gspo'] = 'none',
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+
+    loss_normalization: Literal['sequence', 'constant'] = 'sequence',
+    normalization_constant: int | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
+    
+    from cs336_alignment.sft_utils import tokenize_prompt_and_output, get_response_log_probs
+
+    tokenize_result = tokenize_prompt_and_output(
+        prompt_strs = repeated_prompts,
+        output_strs = rollout_responses,
+        tokenizer = tokenizer,
+    ) 
+
+    input_ids = tokenize_result['input_ids']
+    labels = tokenize_result['labels']
+    response_mask = tokenize_result['response_mask'] 
+
+    raw_rewards, raw_rewards_metadata = compute_rollout_rewards(
+        reward_fn = reward_fn,
+        rollout_responses = rollout_responses,
+        repeated_ground_truths = repeated_ground_truths,
+    )
+
+    advantages, advantages_metadata = compute_group_normalized_rewards(
+        raw_rewards = raw_rewards,
+        group_size = group_size,
+        baseline = baseline,
+        advantage_eps = advantage_eps,
+        advantage_normalizer = advantage_normalizer,
+    )
+
+    device = next(model.parameters()).device
+
+    batch_size = input_ids.shape[0]
+    micro_batch_size = batch_size // gradient_accumulation_steps
+
+    total_loss = torch.zeros((), device=device)
+    total_entropy = torch.zeros((), device=device)
+    total_response_tokens = torch.zeros((), device=device)
+
+    optimizer.zero_grad()
+
+    for start in range(0, batch_size, micro_batch_size):
+        end = start + micro_batch_size
+
+        micro_input_ids = input_ids[start : end].to(device)
+        micro_labels = labels[start : end].to(device)
+        micro_response_mask = response_mask[start : end].to(device)
+        micro_advantages = advantages[start : end].to(device)
+
+        micro_policy_result = get_response_log_probs(
+            model = model,
+            input_ids = micro_input_ids,
+            labels = micro_labels,
+            return_token_entropy = True,
+        )
+
+        micro_policy_log_probs = micro_policy_result['log_probs']
+        micro_token_entropy = micro_policy_result['token_entropy']
+
+        per_token_loss, pre_token_loss_metadata = compute_policy_gradient_loss(
+            raw_rewards_or_advantages = micro_advantages,
+            policy_log_probs = micro_policy_log_probs,
+            importance_reweighting_method = importance_reweighting_method,
+            old_log_probs = None,
+            cliprange = cliprange,
+            response_mask = micro_response_mask,
+        )
+
+        micro_batch_loss = aggregate_loss_across_microbatch(
+            per_token_policy_gradient_loss = per_token_loss,
+            mask = micro_response_mask,
+            loss_normalization = loss_normalization,
+            normalization_constant = normalization_constant,
+        )
+
+        scaled_loss = micro_batch_loss * (
+            len(micro_input_ids) / batch_size
+        )
+
+        scaled_loss.backward()
+
+        
+        total_loss += scaled_loss.detach()
+
+        total_entropy += (
+            micro_token_entropy * micro_response_mask
+        ).sum().detach()
+
+        total_response_tokens += micro_response_mask.sum().detach()
+
+    mean_token_entropy = total_entropy / total_response_tokens
+
+    metadata = {}
+    metadata.update(raw_rewards_metadata)
+    metadata.update(advantages_metadata)
+
+    metadata["loss"] = total_loss
+    metadata["token_entropy"] = mean_token_entropy
+
+    if max_grad_norm is not None:
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_grad_norm,
+        )
+        metadata["grad_norm"] = grad_norm
+    else:
+        metadata["grad_norm"] = None
+
+    optimizer.step()
+    optimizer.zero_grad()
+
+    return total_loss, metadata
+    
