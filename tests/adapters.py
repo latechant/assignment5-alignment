@@ -125,7 +125,12 @@ def run_compute_rollout_rewards(
                 Reward statistics to log. At minimum, include the mean total
                 and format rewards over the rollout batch.
     """
-    raise NotImplementedError
+    from cs336_alignment.grpo import compute_rollout_rewards
+    return compute_rollout_rewards(
+        reward_fn = reward_fn,
+        rollout_responses = rollout_responses,
+        repeated_ground_truths = repeated_ground_truths,
+    )
 
 
 def run_compute_group_normalized_rewards(
@@ -164,7 +169,14 @@ def run_compute_group_normalized_rewards(
                 your choice of other statistics to log (e.g. mean, std, max/min
                 of rewards).
     """
-    raise NotImplementedError
+    from cs336_alignment.grpo import compute_group_normalized_rewards
+    return compute_group_normalized_rewards(
+        raw_rewards = raw_rewards,
+        group_size = group_size,
+        baseline = baseline,
+        advantage_eps = advantage_eps,
+        advantage_normalizer = advantage_normalizer,
+    )
 
 
 def run_compute_policy_gradient_loss(
@@ -211,7 +223,15 @@ def run_compute_policy_gradient_loss(
                 Statistics from the underlying loss call, such as
                 clip-fraction components.
     """
-    raise NotImplementedError
+    from cs336_alignment.grpo import compute_policy_gradient_loss
+    return compute_policy_gradient_loss(
+        raw_rewards_or_advantages = raw_rewards_or_advantages,
+        policy_log_probs = policy_log_probs,
+        importance_reweighting_method = importance_reweighting_method,
+        old_log_probs = old_log_probs,
+        cliprange = cliprange,
+        response_mask = response_mask,
+    )
 
 
 def run_aggregate_loss_across_microbatch(
@@ -243,7 +263,13 @@ def run_aggregate_loss_across_microbatch(
             A scalar containing the average loss. Make sure you can later call
             backward on this loss.
     """
-    raise NotImplementedError
+    from cs336_alignment.grpo import aggregate_loss_across_microbatch
+    return aggregate_loss_across_microbatch(
+        per_token_policy_gradient_loss = per_token_policy_gradient_loss,
+        mask = mask,
+        loss_normalization = loss_normalization,
+        normalization_constant = normalization_constant,
+    )
 
 
 def run_grpo_train_step(
